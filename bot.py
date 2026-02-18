@@ -1,67 +1,89 @@
 import os
+import asyncio
 from collections import deque
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Store last 200 results
 history = deque(maxlen=200)
+last_prediction = None  # store BIG/SMALL
 
 def big_small(num):
     return "BIG" if num >= 5 else "SMALL"
 
-# /start
+# START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 AI Prediction Bot Ready\n\n"
-        "👉 Number bhejo (0-9)\n"
-        "👉 Fir /predict dabao"
+        "Send number (0-9)\n"
+        "Then /predict"
     )
 
-# Save number
+# SAVE NUMBER + RESULT CHECK
 async def save_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_prediction
+
     try:
         num = int(update.message.text)
-        if 0 <= num <= 9:
-            history.append(num)
-            await update.message.reply_text(f"✅ Saved: {num}")
-        else:
-            await update.message.reply_text("❌ Send number 0-9")
-    except:
-        await update.message.reply_text("❌ Invalid number")
+        if not (0 <= num <= 9):
+            await update.message.reply_text("❌ Send 0-9 only")
+            return
 
-# Prediction logic
+        history.append(num)
+
+        result_type = big_small(num)
+
+        if last_prediction:
+            if last_prediction == result_type:
+                await update.message.reply_text("✅ Result: WIN")
+            else:
+                await update.message.reply_text("❌ Result: LOSS")
+
+            last_prediction = None
+
+        await update.message.reply_text(f"💾 Saved: {num}")
+
+    except:
+        await update.message.reply_text("❌ Invalid")
+
+# PREDICTION LOGIC
 def predict_logic():
-    if len(history) < 10:
-        return "LOW DATA", "SMALL", 50
+    if len(history) < 15:
+        return "SMALL", 50.0
 
     last20 = list(history)[-20:]
-
     big_count = sum(1 for n in last20 if n >= 5)
-    small_count = len(last20) - big_count
+    small_count = 20 - big_count
 
-    trend = "BIG" if big_count > small_count else "SMALL"
+    pred = "BIG" if big_count > small_count else "SMALL"
 
     momentum = abs(big_count - small_count) / 20
     confidence = round(50 + momentum * 50, 1)
 
-    return "ANALYZED", trend, confidence
+    return pred, confidence
 
-# /predict
+# PREDICT
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state, pred, conf = predict_logic()
+    global last_prediction
 
-    await update.message.reply_text(
-        f"📊 AI Analysis: {state}\n"
+    msg = await update.message.reply_text("🧠 AI analyzing data...")
+
+    await asyncio.sleep(2.5)
+
+    pred, conf = predict_logic()
+    last_prediction = pred
+
+    await msg.edit_text(
+        f"📊 AI Analysis Complete\n"
         f"🎯 Prediction: {pred}\n"
         f"📈 Confidence: {conf}%"
     )
 
-# /reset
+# RESET
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history.clear()
-    await update.message.reply_text("🔄 History reset")
+    await update.message.reply_text("🔄 History cleared")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
