@@ -1,124 +1,159 @@
 import os
-from collections import deque
-import numpy as np
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# store last results (max 50)
-history = deque(maxlen=50)
-last_predictions = deque(maxlen=5)
+# ===== DATA STORE =====
+history = []
+last_prediction = None
+loss_streak = 0
+wins = 0
+losses = 0
 
-def big_small(num):
-    return "BIG" if num >= 5 else "SMALL"
+# ===== UTIL =====
+def big_small(n):
+    return "BIG" if n >= 5 else "SMALL"
 
-def ai_predict():
-    if len(history) < 10:
-        return None, 0
+# ===== TREND ENGINE =====
+def momentum_score(data):
+    if len(data) < 5:
+        return 0
+    last = data[-5:]
+    bigs = sum(1 for x in last if x >= 5)
+    return bigs / 5
 
-    last5 = list(history)[-5:]
-    last10 = list(history)[-10:]
-    last20 = list(history)[-20:]
+def volatility_score(data):
+    if len(data) < 5:
+        return 0
+    flips = 0
+    for i in range(1, len(data)):
+        if big_small(data[i]) != big_small(data[i-1]):
+            flips += 1
+    return flips / len(data)
 
-    # convert to BIG SMALL
-    bs10 = [big_small(x) for x in last10]
-    bs5 = [big_small(x) for x in last5]
-
-    trend_big = bs10.count("BIG")
-    trend_small = bs10.count("SMALL")
-
-    momentum = bs5[-1]
-    momentum_boost = 2 if bs5.count(momentum) >= 3 else 0
-
-    # reversal detection
+def streak_strength(data):
+    if not data:
+        return 0
+    last = big_small(data[-1])
     streak = 1
-    for i in range(len(bs5)-1, 0, -1):
-        if bs5[i] == bs5[i-1]:
+    for i in range(len(data)-2, -1, -1):
+        if big_small(data[i]) == last:
             streak += 1
         else:
             break
+    return streak
 
-    reversal = "BIG" if momentum == "SMALL" else "SMALL" if streak >= 4 else None
+# ===== REGIME =====
+def detect_regime(data):
+    if streak_strength(data) >= 3:
+        return "TREND"
+    if volatility_score(data) > 0.6:
+        return "SIDEWAYS"
+    return "NEUTRAL"
 
-    score_big = trend_big
-    score_small = trend_small
+# ===== PREDICTION ENGINE =====
+def make_prediction(data):
+    global loss_streak
 
-    if momentum == "BIG":
-        score_big += momentum_boost
+    regime = detect_regime(data)
+    momentum = momentum_score(data)
+    vol = volatility_score(data)
+    streak = streak_strength(data)
+
+    if regime == "TREND":
+        pred = big_small(data[-1])
+
+    elif regime == "SIDEWAYS":
+        pred = "SMALL" if big_small(data[-1]) == "BIG" else "BIG"
+
     else:
-        score_small += momentum_boost
+        pred = "BIG" if momentum > 0.5 else "SMALL"
 
-    if reversal == "BIG":
-        score_big += 1
-    elif reversal == "SMALL":
-        score_small += 1
+    if loss_streak >= 3:
+        pred = "SMALL" if pred == "BIG" else "BIG"
 
-    if score_big > score_small:
-        pred = "BIG"
-        diff = score_big - score_small
-    else:
-        pred = "SMALL"
-        diff = score_small - score_big
+    confidence = 50 + (streak * 3) + (momentum * 20) - (vol * 15)
+    confidence = max(5, min(90, round(confidence, 1)))
 
-    confidence = min(78, 55 + diff * 5)
+    return pred, confidence, regime, momentum, vol
 
-    return pred, confidence
-
-
+# ===== COMMANDS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot ready\nSend number (0-9)")
-
+    await update.message.reply_text("🤖 PRO AI BOT READY\nSend number or /predict")
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    history.clear()
-    last_predictions.clear()
+    global history, wins, losses, loss_streak
+    history = []
+    wins = 0
+    losses = 0
+    loss_streak = 0
     await update.message.reply_text("🔄 Data reset done")
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    total = wins + losses
+    acc = (wins / total * 100) if total > 0 else 0
+    await update.message.reply_text(
+        f"📊 Total: {total}\n✅ Wins: {wins}\n❌ Loss: {losses}\n🎯 Accuracy: {acc:.1f}%\n⚠️ Loss streak: {loss_streak}"
+    )
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pred, conf = ai_predict()
-    if pred is None:
-        await update.message.reply_text("Data kam hai (min 10)")
+    global last_prediction
+
+    if len(history) < 5:
+        await update.message.reply_text("Data kam hai (min 5)")
         return
 
-    last_predictions.append(pred)
-    await update.message.reply_text(f"📊 Prediction: {pred}\nConfidence: {conf:.1f}%")
+    pred, conf, regime, momentum, vol = make_prediction(history)
+    last_prediction = pred
 
+    msg = (
+        f"📊 Regime: {regime}\n"
+        f"📈 Momentum: {momentum:.2f}\n"
+        f"🌪 Volatility: {vol:.2f}\n"
+        f"🎯 Prediction: {pred}\n"
+        f"📉 Confidence: {conf}%"
+    )
 
+    await update.message.reply_text(msg)
+
+# ===== NUMBER INPUT =====
 async def handle_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global history, last_prediction, wins, losses, loss_streak
+
     text = update.message.text.strip()
+
     if not text.isdigit():
         await update.message.reply_text("Send number only")
         return
 
     num = int(text)
-    if num < 0 or num > 9:
-        await update.message.reply_text("0-9 only")
-        return
-
     history.append(num)
 
-    if len(last_predictions) > 0:
-        last_pred = last_predictions[-1]
+    if last_prediction:
         actual = big_small(num)
-
-        if last_pred == actual:
+        if actual == last_prediction:
+            wins += 1
+            loss_streak = 0
             await update.message.reply_text("Result: WIN ✅")
         else:
+            losses += 1
+            loss_streak += 1
             await update.message.reply_text("Result: LOSS ❌")
 
-
+# ===== MAIN =====
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("status", status))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number))
 
+    print("BOT RUNNING...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
