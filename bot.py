@@ -7,7 +7,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 data = []
 
 def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Send numbers one by one")
+    update.message.reply_text("Bot ready ✅ Send numbers")
 
 def reset(update: Update, context: CallbackContext):
     global data
@@ -27,7 +27,7 @@ def predict(update: Update, context: CallbackContext):
     else:
         result = "SMALL"
 
-    update.message.reply_text(f"Prediction: {result}")
+    update.message.reply_text(result)
 
 def handle(update: Update, context: CallbackContext):
     try:
@@ -38,7 +38,7 @@ def handle(update: Update, context: CallbackContext):
         update.message.reply_text("Send number only")
 
 def main():
-    updater = Updater(TOKEN)
+    updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
