@@ -1,126 +1,124 @@
-import json
-import numpy as np
 import os
+from collections import deque
+import numpy as np
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-DATA_FILE = "data.json"
+TOKEN = os.getenv("BOT_TOKEN")
 
-# ---------- DATA ----------
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"history": [], "weights": {"trend": 0.5, "reversal": 0.3, "streak": 0.2}}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+# store last results (max 50)
+history = deque(maxlen=50)
+last_predictions = deque(maxlen=5)
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+def big_small(num):
+    return "BIG" if num >= 5 else "SMALL"
 
-# ---------- AI LOGIC ----------
-def analyze(history, weights):
-    if len(history) < 5:
+def ai_predict():
+    if len(history) < 10:
         return None, 0
 
-    last = history[-10:]
-    big = sum(1 for x in last if x >= 5)
-    small = len(last) - big
+    last5 = list(history)[-5:]
+    last10 = list(history)[-10:]
+    last20 = list(history)[-20:]
 
-    trend_score = (big - small) / len(last)
+    # convert to BIG SMALL
+    bs10 = [big_small(x) for x in last10]
+    bs5 = [big_small(x) for x in last5]
 
-    streak = 0
-    for i in range(len(last)-1, 0, -1):
-        if (last[i] >= 5) == (last[i-1] >= 5):
+    trend_big = bs10.count("BIG")
+    trend_small = bs10.count("SMALL")
+
+    momentum = bs5[-1]
+    momentum_boost = 2 if bs5.count(momentum) >= 3 else 0
+
+    # reversal detection
+    streak = 1
+    for i in range(len(bs5)-1, 0, -1):
+        if bs5[i] == bs5[i-1]:
             streak += 1
         else:
             break
 
-    reversal_score = -trend_score
+    reversal = "BIG" if momentum == "SMALL" else "SMALL" if streak >= 4 else None
 
-    score = (
-        trend_score * weights["trend"]
-        + reversal_score * weights["reversal"]
-        + (streak / 10) * weights["streak"]
-    )
+    score_big = trend_big
+    score_small = trend_small
 
-    prediction = "BIG" if score > 0 else "SMALL"
-    confidence = round(abs(score) * 100, 2)
+    if momentum == "BIG":
+        score_big += momentum_boost
+    else:
+        score_small += momentum_boost
 
-    return prediction, confidence
+    if reversal == "BIG":
+        score_big += 1
+    elif reversal == "SMALL":
+        score_small += 1
 
-# ---------- COMMANDS ----------
+    if score_big > score_small:
+        pred = "BIG"
+        diff = score_big - score_small
+    else:
+        pred = "SMALL"
+        diff = score_small - score_big
+
+    confidence = min(78, 55 + diff * 5)
+
+    return pred, confidence
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 AI Bot Ready\nSend numbers then /predict")
+    await update.message.reply_text("✅ Bot ready\nSend number (0-9)")
+
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    data["history"] = []
-    save_data(data)
+    history.clear()
+    last_predictions.clear()
     await update.message.reply_text("🔄 Data reset done")
 
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    prediction, confidence = analyze(data["history"], data["weights"])
 
-    if prediction is None:
-        await update.message.reply_text("Data kam hai (min 5 results)")
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pred, conf = ai_predict()
+    if pred is None:
+        await update.message.reply_text("Data kam hai (min 10)")
         return
 
-    context.user_data["last_prediction"] = prediction
+    last_predictions.append(pred)
+    await update.message.reply_text(f"📊 Prediction: {pred}\nConfidence: {conf:.1f}%")
 
-    await update.message.reply_text(
-        f"📊 Prediction: {prediction}\nConfidence: {confidence}%"
-    )
 
-# ---------- NUMBER INPUT ----------
 async def handle_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-
     if not text.isdigit():
         await update.message.reply_text("Send number only")
         return
 
     num = int(text)
+    if num < 0 or num > 9:
+        await update.message.reply_text("0-9 only")
+        return
 
-    data = load_data()
-    data["history"].append(num)
-    data["history"] = data["history"][-100:]
+    history.append(num)
 
-    if "last_prediction" in context.user_data:
-        pred = context.user_data["last_prediction"]
-        actual = "BIG" if num >= 5 else "SMALL"
+    if len(last_predictions) > 0:
+        last_pred = last_predictions[-1]
+        actual = big_small(num)
 
-        if pred == actual:
-            result = "WIN ✅"
-            data["weights"]["trend"] += 0.01
+        if last_pred == actual:
+            await update.message.reply_text("Result: WIN ✅")
         else:
-            result = "LOSS ❌"
-            data["weights"]["trend"] -= 0.01
+            await update.message.reply_text("Result: LOSS ❌")
 
-        save_data(data)
-        await update.message.reply_text(f"Result: {result}")
-    else:
-        save_data(data)
 
-# ---------- MAIN ----------
 def main():
-    TOKEN = os.getenv("BOT_TOKEN")
-
-    app = Application.builder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number))
 
-    print("Bot running...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
