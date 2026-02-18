@@ -1,88 +1,134 @@
 import os
+import json
+import numpy as np
+from collections import Counter
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATA_FILE = "history.json"
 
-MAX_HISTORY = 200
-history = []
-last_prediction = None
+# ------------------ STORAGE ------------------
 
-def big_small(num):
-    return "BIG" if num >= 5 else "SMALL"
+def load_history():
+    if not os.path.exists(DATA_FILE):
+        return []
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
-def ai_predict():
+def save_history(history):
+    with open(DATA_FILE, "w") as f:
+        json.dump(history[-500:], f)
+
+# ------------------ AI LOGIC ------------------
+
+def predict_big_small(history):
+
     if len(history) < 20:
-        return "Not enough data", 0
+        return "BIG", 50.0, "LOW DATA"
 
-    last_200 = history[-200:]
-    last_10 = history[-10:]
+    last200 = history[-200:]
+    last15 = history[-15:]
+    last5 = history[-5:]
 
-    big_count = sum(1 for n in last_200 if n >= 5)
-    small_count = len(last_200) - big_count
+    def to_bs(x):
+        return "BIG" if x >= 5 else "SMALL"
 
-    recent_big = sum(1 for n in last_10 if n >= 5)
-    recent_small = 10 - recent_big
+    bs200 = [to_bs(x) for x in last200]
+    bs15 = [to_bs(x) for x in last15]
+    bs5 = [to_bs(x) for x in last5]
 
-    momentum = recent_big - recent_small
-    ratio = big_count - small_count
+    p200 = Counter(bs200)
+    p15 = Counter(bs15)
+    p5 = Counter(bs5)
 
-    score = (momentum * 0.6) + (ratio * 0.4)
-
-    if score > 0:
-        prediction = "BIG"
-    else:
-        prediction = "SMALL"
-
-    confidence = min(90, abs(score) * 2)
-
-    return prediction, round(confidence, 1)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot ready ✅\nSend numbers or /predict")
-
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_prediction
-    prediction, conf = ai_predict()
-
-    if prediction == "Not enough data":
-        await update.message.reply_text("Need at least 20 results")
-        return
-
-    last_prediction = prediction
-    await update.message.reply_text(
-        f"📊 AI Analysis\nPrediction: {prediction}\nConfidence: {conf}%"
+    big_score = (
+        (p200["BIG"] / len(bs200)) * 0.4 +
+        (p15["BIG"] / len(bs15)) * 0.35 +
+        (p5["BIG"] / len(bs5)) * 0.25
     )
 
+    prediction = "BIG" if big_score >= 0.5 else "SMALL"
+    confidence = abs(big_score - 0.5) * 200
+
+    std = np.std(last15)
+
+    if std > 2.8:
+        regime = "VOLATILE"
+    elif std > 2:
+        regime = "TREND"
+    else:
+        regime = "STABLE"
+
+    return prediction, round(confidence, 2), regime
+
+# ------------------ COMMANDS ------------------
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ AI Prediction Bot Ready\nSend number or photo")
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_history([])
+    await update.message.reply_text("🔄 Data reset done")
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    history = load_history()
+    await update.message.reply_text(f"📊 Stored Results: {len(history)}")
+
+# ------------------ NUMBER INPUT ------------------
+
 async def handle_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_prediction
 
     text = update.message.text.strip()
+
     if not text.isdigit():
         return
 
     num = int(text)
+    history = load_history()
+
+    if history:
+        last_pred = context.user_data.get("last_prediction")
+
+        if last_pred:
+            actual = "BIG" if num >= 5 else "SMALL"
+            result = "WIN ✅" if actual == last_pred else "LOSS ❌"
+            await update.message.reply_text(f"Result: {result}")
+
     history.append(num)
+    save_history(history)
 
-    if len(history) > MAX_HISTORY:
-        history.pop(0)
+# ------------------ PHOTO INPUT ------------------
 
-    if last_prediction:
-        result = big_small(num)
-        if result == last_prediction:
-            await update.message.reply_text("Result: WIN ✅")
-        else:
-            await update.message.reply_text("Result: LOSS ❌")
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    history.clear()
-    await update.message.reply_text("History cleared")
+    history = load_history()
+    pred, conf, regime = predict_big_small(history)
 
-app = ApplicationBuilder().token(TOKEN).build()
+    context.user_data["last_prediction"] = pred
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("predict", predict))
-app.add_handler(CommandHandler("reset", reset))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number))
+    msg = f"""
+📊 AI Market State: {regime}
+🎯 Prediction: {pred}
+🧠 Confidence: {conf}%
+"""
 
-app.run_polling()
+    await update.message.reply_text(msg)
+
+# ------------------ MAIN ------------------
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("status", status))
+
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number))
+
+    print("Bot running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
