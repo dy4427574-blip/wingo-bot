@@ -1,53 +1,76 @@
 import os
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-data = []
+results = []
+last_prediction = None
+wins = 0
+losses = 0
 
-def start(update: Update, context: CallbackContext):
+def start(update, context):
     update.message.reply_text("Bot ready ✅ Send numbers")
 
-def reset(update: Update, context: CallbackContext):
-    global data
-    data = []
-    update.message.reply_text("Data reset")
+def predict(update, context):
+    global last_prediction
 
-def predict(update: Update, context: CallbackContext):
-    if len(data) < 5:
+    if len(results) < 5:
         update.message.reply_text("Not enough data")
         return
 
-    last = data[-5:]
-    avg = sum(last) / len(last)
+    last7 = results[-7:]
+    big = sum(1 for x in last7 if x >= 5)
+    small = len(last7) - big
 
-    if avg >= 5:
-        result = "BIG"
+    if big > small:
+        last_prediction = "SMALL"
     else:
-        result = "SMALL"
+        last_prediction = "BIG"
 
-    update.message.reply_text(result)
+    update.message.reply_text(f"Prediction: {last_prediction}")
 
-def handle(update: Update, context: CallbackContext):
+def stats(update, context):
+    total = wins + losses
+    acc = (wins / total * 100) if total > 0 else 0
+    update.message.reply_text(
+        f"Wins: {wins}\nLoss: {losses}\nAccuracy: {acc:.1f}%"
+    )
+
+def handle_number(update, context):
+    global wins, losses, last_prediction
+
     try:
         num = int(update.message.text)
-        data.append(num)
-        update.message.reply_text("Added")
     except:
         update.message.reply_text("Send number only")
+        return
 
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    results.append(num)
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("predict", predict))
-    dp.add_handler(CommandHandler("reset", reset))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle))
+    if len(results) > 50:
+        results.pop(0)
 
-    updater.start_polling()
-    updater.idle()
+    current = "BIG" if num >= 5 else "SMALL"
 
-if __name__ == "__main__":
-    main()
+    msg = "Added"
+
+    if last_prediction:
+        if current == last_prediction:
+            wins += 1
+            msg += "\nResult: WIN ✅"
+        else:
+            losses += 1
+            msg += "\nResult: LOSS ❌"
+
+    update.message.reply_text(msg)
+
+updater = Updater(TOKEN, use_context=True)
+dp = updater.dispatcher
+
+dp.add_handler(CommandHandler("start", start))
+dp.add_handler(CommandHandler("predict", predict))
+dp.add_handler(CommandHandler("stats", stats))
+dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_number))
+
+updater.start_polling()
+updater.idle()
