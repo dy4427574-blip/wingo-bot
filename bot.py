@@ -4,95 +4,85 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+MAX_HISTORY = 200
 history = []
 last_prediction = None
-wins = 0
-losses = 0
 
-# ===== HELPER =====
-def big_small(n):
-    return "BIG" if n >= 5 else "SMALL"
+def big_small(num):
+    return "BIG" if num >= 5 else "SMALL"
 
-def simple_predict(data):
-    if len(data) < 5:
-        return None, 0
+def ai_predict():
+    if len(history) < 20:
+        return "Not enough data", 0
 
-    last5 = data[-5:]
-    big_count = sum(1 for x in last5 if x >= 5)
+    last_200 = history[-200:]
+    last_10 = history[-10:]
 
-    if big_count >= 3:
-        pred = "BIG"
+    big_count = sum(1 for n in last_200 if n >= 5)
+    small_count = len(last_200) - big_count
+
+    recent_big = sum(1 for n in last_10 if n >= 5)
+    recent_small = 10 - recent_big
+
+    momentum = recent_big - recent_small
+    ratio = big_count - small_count
+
+    score = (momentum * 0.6) + (ratio * 0.4)
+
+    if score > 0:
+        prediction = "BIG"
     else:
-        pred = "SMALL"
+        prediction = "SMALL"
 
-    confidence = round((big_count / 5) * 100, 1)
-    return pred, confidence
+    confidence = min(90, abs(score) * 2)
 
-# ===== COMMANDS =====
+    return prediction, round(confidence, 1)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot Ready\nSend number then /predict")
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global history, wins, losses
-    history = []
-    wins = 0
-    losses = 0
-    await update.message.reply_text("🔄 Reset Done")
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    total = wins + losses
-    acc = (wins / total * 100) if total > 0 else 0
-    await update.message.reply_text(
-        f"📊 Total: {total}\n✅ Wins: {wins}\n❌ Loss: {losses}\n🎯 Accuracy: {acc:.1f}%"
-    )
+    await update.message.reply_text("Bot ready ✅\nSend numbers or /predict")
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_prediction
+    prediction, conf = ai_predict()
 
-    pred, conf = simple_predict(history)
-
-    if pred is None:
-        await update.message.reply_text("❗ Send at least 5 numbers first")
+    if prediction == "Not enough data":
+        await update.message.reply_text("Need at least 20 results")
         return
 
-    last_prediction = pred
-    await update.message.reply_text(f"🎯 Prediction: {pred}\n📉 Confidence: {conf}%")
+    last_prediction = prediction
+    await update.message.reply_text(
+        f"📊 AI Analysis\nPrediction: {prediction}\nConfidence: {conf}%"
+    )
 
-# ===== NUMBER INPUT =====
 async def handle_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global history, last_prediction, wins, losses
+    global last_prediction
 
     text = update.message.text.strip()
-
     if not text.isdigit():
-        await update.message.reply_text("Send number only")
         return
 
     num = int(text)
     history.append(num)
 
-    if last_prediction:
-        actual = big_small(num)
+    if len(history) > MAX_HISTORY:
+        history.pop(0)
 
-        if actual == last_prediction:
-            wins += 1
+    if last_prediction:
+        result = big_small(num)
+        if result == last_prediction:
             await update.message.reply_text("Result: WIN ✅")
         else:
-            losses += 1
             await update.message.reply_text("Result: LOSS ❌")
 
-# ===== MAIN =====
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    history.clear()
+    await update.message.reply_text("History cleared")
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("predict", predict))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number))
+app = ApplicationBuilder().token(TOKEN).build()
 
-    print("BOT RUNNING...")
-    app.run_polling()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("predict", predict))
+app.add_handler(CommandHandler("reset", reset))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number))
 
-if __name__ == "__main__":
-    main()
+app.run_polling()
