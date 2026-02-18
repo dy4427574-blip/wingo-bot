@@ -1,0 +1,8 @@
+{
+  "history": [],
+  "weights": {
+    "trend": 0.5,
+    "reversal": 0.3,
+    "streak": 0.2
+  }
+}
