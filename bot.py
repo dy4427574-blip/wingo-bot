@@ -1,67 +1,52 @@
 import os
-from flask import Flask
-from threading import Thread
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
-
-TOKEN = os.getenv("BOT_TOKEN")
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 
 data = []
 
-def start(update, context):
-    update.message.reply_text("Bot running ✅")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Bot running ✅")
 
-def reset(update, context):
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = []
-    update.message.reply_text("Data reset ✅")
+    await update.message.reply_text("Data reset ✅")
 
-def predict(update, context):
-    if len(data) < 5:
-        update.message.reply_text("Not enough data")
+async def handle_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global data
+    
+    text = update.message.text
+    
+    nums = [int(x) for x in text.split() if x.isdigit()]
+    
+    if not nums:
+        await update.message.reply_text("Send number only")
         return
+    
+    data.extend(nums)
+    data = data[-50:]
+    
+    await update.message.reply_text(f"Added {len(nums)} results ✅\nStored: {len(data)}")
 
-    last = data[-5:]
-    avg = sum(last)/len(last)
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global data
+    
+    if len(data) < 15:
+        await update.message.reply_text("Not enough data")
+        return
+    
+    last7 = data[-7:]
+    avg = sum(last7)/len(last7)
+    
+    result = "BIG" if avg >= 5 else "SMALL"
+    
+    await update.message.reply_text(f"Prediction: {result}")
 
-    if avg >= 5:
-        result = "BIG"
-    else:
-        result = "SMALL"
+app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
-    update.message.reply_text(f"Prediction: {result}")
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("reset", reset))
+app.add_handler(CommandHandler("predict", predict))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_numbers))
 
-def add_number(update, context):
-    try:
-        num = int(update.message.text)
-        data.append(num)
-        if len(data) > 50:
-            data.pop(0)
-
-        update.message.reply_text(f"Added {num} ✅ Stored: {len(data)}")
-    except:
-        update.message.reply_text("Send number only")
-
-def run_bot():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("reset", reset))
-    dp.add_handler(CommandHandler("predict", predict))
-    dp.add_handler(MessageHandler(Filters.text, add_number))
-
-    updater.start_polling()
-    updater.idle()
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot running"
-
-def run():
-    app.run(host="0.0.0.0", port=10000)
-
-if __name__ == "__main__":
-    Thread(target=run).start()
-    run_bot()
+app.run_polling()
