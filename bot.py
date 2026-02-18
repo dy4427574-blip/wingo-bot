@@ -1,52 +1,53 @@
 import os
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+
+TOKEN = os.getenv("BOT_TOKEN")
 
 data = []
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot running ✅")
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Send numbers one by one")
 
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def reset(update: Update, context: CallbackContext):
     global data
     data = []
-    await update.message.reply_text("Data reset ✅")
+    update.message.reply_text("Data reset")
 
-async def handle_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global data
-    
-    text = update.message.text
-    
-    nums = [int(x) for x in text.split() if x.isdigit()]
-    
-    if not nums:
-        await update.message.reply_text("Send number only")
+def predict(update: Update, context: CallbackContext):
+    if len(data) < 5:
+        update.message.reply_text("Not enough data")
         return
-    
-    data.extend(nums)
-    data = data[-50:]
-    
-    await update.message.reply_text(f"Added {len(nums)} results ✅\nStored: {len(data)}")
 
-async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global data
-    
-    if len(data) < 15:
-        await update.message.reply_text("Not enough data")
-        return
-    
-    last7 = data[-7:]
-    avg = sum(last7)/len(last7)
-    
-    result = "BIG" if avg >= 5 else "SMALL"
-    
-    await update.message.reply_text(f"Prediction: {result}")
+    last = data[-5:]
+    avg = sum(last) / len(last)
 
-app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+    if avg >= 5:
+        result = "BIG"
+    else:
+        result = "SMALL"
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("reset", reset))
-app.add_handler(CommandHandler("predict", predict))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_numbers))
+    update.message.reply_text(f"Prediction: {result}")
 
-app.run_polling()
+def handle(update: Update, context: CallbackContext):
+    try:
+        num = int(update.message.text)
+        data.append(num)
+        update.message.reply_text("Added")
+    except:
+        update.message.reply_text("Send number only")
+
+def main():
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("predict", predict))
+    dp.add_handler(CommandHandler("reset", reset))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle))
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
