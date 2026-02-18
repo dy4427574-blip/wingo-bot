@@ -1,94 +1,90 @@
 import os
-import requests
-import pytesseract
 import cv2
 import numpy as np
+import pytesseract
 from PIL import Image
-from io import BytesIO
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 history = []
 last_prediction = None
 
-def extract_numbers(image_bytes):
-    img = Image.open(BytesIO(image_bytes))
-    img = cv2.cvtColor(np.array(img), cv2.COLOR_BGR2GRAY)
-    text = pytesseract.image_to_string(img)
+def big_small(num):
+    return "BIG" if num >= 5 else "SMALL"
 
-    nums = [int(s) for s in text.split() if s.isdigit()]
-    return nums
+# RESET
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global history, last_prediction
+    history = []
+    last_prediction = None
+    await update.message.reply_text("🔄 Data reset done")
 
-def analyze_trend(data):
-    if len(data) < 5:
-        return None, 0
-
-    last5 = data[-5:]
-    big = sum(1 for x in last5 if x >= 5)
-    small = 5 - big
-
-    if big > small:
-        return "BIG", int((big/5)*100)
-    else:
-        return "SMALL", int((small/5)*100)
-
-def start(update, context):
-    update.message.reply_text("📸 Screenshot bhejo")
-
-def handle_photo(update, context):
+# PHOTO ANALYSIS
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global history, last_prediction
 
-    file = update.message.photo[-1].get_file()
-    img_bytes = requests.get(file.file_path).content
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    file_path = "image.jpg"
+    await file.download_to_drive(file_path)
 
-    nums = extract_numbers(img_bytes)
+    img = cv2.imread(file_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    if not nums:
-        update.message.reply_text("❌ Numbers detect nahi hue")
+    text = pytesseract.image_to_string(gray)
+
+    numbers = [int(x) for x in text if x.isdigit()]
+
+    if len(numbers) < 5:
+        await update.message.reply_text("❌ Data kam hai — clear photo bhejo")
         return
 
-    history = nums[-20:]
+    history = numbers[-20:]
 
-    pred, conf = analyze_trend(history)
+    big = sum(1 for n in history if n >= 5)
+    small = len(history) - big
 
-    if pred:
-        last_prediction = pred
-        update.message.reply_text(
-            f"📊 Prediction: {pred}\nConfidence: {conf}%"
-        )
-    else:
-        update.message.reply_text("Data kam hai")
+    prediction = "BIG" if big >= small else "SMALL"
+    last_prediction = prediction
 
-def handle_number(update, context):
-    global last_prediction
-    text = update.message.text.strip()
+    await update.message.reply_text(
+        f"📊 Numbers: {history[-10:]}\n"
+        f"📈 BIG:{big} SMALL:{small}\n"
+        f"🔮 Prediction: {prediction}"
+    )
 
-    if not text.isdigit():
-        update.message.reply_text("Number bhejo")
+# NUMBER INPUT (WIN LOSS)
+async def number_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global history, last_prediction
+
+    try:
+        num = int(update.message.text)
+    except:
+        await update.message.reply_text("Send number only")
         return
 
-    num = int(text)
     history.append(num)
+    result = big_small(num)
 
     if last_prediction:
-        if (num >= 5 and last_prediction=="BIG") or (num < 5 and last_prediction=="SMALL"):
-            update.message.reply_text("Added\nResult: WIN ✅")
+        if result == last_prediction:
+            status = "WIN ✅"
         else:
-            update.message.reply_text("Added\nResult: LOSS ❌")
+            status = "LOSS ❌"
     else:
-        update.message.reply_text("Added")
+        status = "No previous prediction"
 
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    await update.message.reply_text(
+        f"Added: {num}\nResult: {result}\nStatus: {status}"
+    )
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_number))
+# START BOT
+app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    updater.start_polling()
-    updater.idle()
+app.add_handler(CommandHandler("reset", reset))
+app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, number_handler))
 
-if __name__ == "__main__":
-    main()
+app.run_polling()
