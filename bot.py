@@ -1,101 +1,68 @@
 import os
 import requests
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from PIL import Image
+from io import BytesIO
+from telegram.ext import Updater, MessageHandler, Filters, CommandHandler
 
 TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
-results = []
+history = []
 last_prediction = None
 
+def analyze_trend(data):
+    if len(data) < 5:
+        return "SMALL", 50
+
+    last5 = data[-5:]
+    big = sum(1 for x in last5 if x >= 5)
+    small = 5 - big
+
+    if big > small:
+        return "BIG", int((big/5)*100)
+    else:
+        return "SMALL", int((small/5)*100)
+
 def start(update, context):
-    update.message.reply_text("📸 Screenshot bhejo — bot auto analyse karega")
+    update.message.reply_text("📸 Send screenshot")
 
-def extract_numbers_from_image(file_url):
-    headers = {
-        "Authorization": f"Bearer {OPENAI_KEY}"
-    }
-
-    data = {
-        "model": "gpt-4.1-mini",
-        "input": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "Extract only visible numbers from this image as list"},
-                    {"type": "input_image", "image_url": file_url}
-                ]
-            }
-        ]
-    }
-
-    r = requests.post("https://api.openai.com/v1/responses", headers=headers, json=data)
-    text = r.json()["output"][0]["content"][0]["text"]
-
-    nums = []
-    for t in text.replace(",", " ").split():
-        if t.isdigit():
-            n = int(t)
-            if 0 <= n <= 9:
-                nums.append(n)
-
-    return nums
-
-def photo_handler(update, context):
+def handle_photo(update, context):
     global last_prediction
 
-    photo = update.message.photo[-1]
-    file = context.bot.getFile(photo.file_id)
-    file_url = file.file_path
+    file = update.message.photo[-1].get_file()
+    img = requests.get(file.file_path).content
+    Image.open(BytesIO(img))  # placeholder processing
 
-    nums = extract_numbers_from_image(file_url)
+    pred, conf = analyze_trend(history)
+    last_prediction = pred
 
-    if not nums:
-        update.message.reply_text("Numbers detect nahi hue ❌")
+    update.message.reply_text(
+        f"📊 Prediction: {pred}\nConfidence: {conf}%"
+    )
+
+def handle_number(update, context):
+    global last_prediction
+    text = update.message.text.strip()
+
+    if not text.isdigit():
+        update.message.reply_text("Send number only")
         return
 
-    results.extend(nums)
+    num = int(text)
+    history.append(num)
 
     if last_prediction:
-        last = nums[-1]
-        if (last >= 5 and last_prediction == "BIG") or (last < 5 and last_prediction == "SMALL"):
-            update.message.reply_text("Result: WIN ✅")
-        else:
-            update.message.reply_text("Result: LOSS ❌")
-
-    update.message.reply_text(f"Numbers detected ✅\n{nums}")
-
-def predict(update, context):
-    global last_prediction
-
-    if len(results) < 10:
-        update.message.reply_text("Data kam hai")
-        return
-
-    last5 = results[-5:]
-    last15 = results[-15:] if len(results) >= 15 else results
-
-    big5 = sum(1 for x in last5 if x >= 5)
-    small5 = len(last5) - big5
-    big15 = sum(1 for x in last15 if x >= 5)
-    small15 = len(last15) - big15
-
-    big_score = big5*2 + big15
-    small_score = small5*2 + small15
-
-    last_prediction = "BIG" if big_score > small_score else "SMALL"
-
-    confidence = int(max(big_score, small_score)/(big_score+small_score)*100)
-
-    update.message.reply_text(f"🔮 Prediction: {last_prediction}\nConfidence: {confidence}%")
+        result = "WIN ✅" if (num >= 5 and last_prediction=="BIG") or (num < 5 and last_prediction=="SMALL") else "LOSS ❌"
+        update.message.reply_text(f"Added\nResult: {result}")
+    else:
+        update.message.reply_text("Added")
 
 def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("predict", predict))
-    dp.add_handler(MessageHandler(Filters.photo, photo_handler))
+    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_number))
 
     updater.start_polling()
     updater.idle()
