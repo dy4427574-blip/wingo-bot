@@ -1,81 +1,84 @@
 import os
 import asyncio
+import numpy as np
 from collections import deque
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 
-if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN not found")
-
-# last 200 numbers store
 history = deque(maxlen=200)
-
 last_prediction = None
 
-def analyze():
-    if len(history) < 5:
-        return "SMALL", 50.0
+def big_small(n):
+    return 1 if n >= 5 else 0
 
-    big = sum(1 for x in history if x >= 5)
-    small = len(history) - big
+def predict_logic():
 
-    if big > small:
-        confidence = (big / len(history)) * 100
-        return "BIG", round(confidence, 1)
+    if len(history) < 10:
+        return "LOW DATA", "BIG", 50
+
+    arr = np.array([big_small(x) for x in history])
+
+    long_term = np.mean(arr)
+    short_term = np.mean(arr[-20:]) if len(arr) >= 20 else np.mean(arr)
+    micro_term = np.mean(arr[-5:])
+
+    score = (long_term * 0.4) + (short_term * 0.35) + (micro_term * 0.25)
+
+    prediction = "BIG" if score >= 0.5 else "SMALL"
+    confidence = abs(score - 0.5) * 200
+
+    flips = np.sum(np.abs(np.diff(arr)))
+    volatility = flips / len(arr)
+
+    if volatility > 0.6:
+        state = "RANDOM"
+    elif volatility > 0.4:
+        state = "NEUTRAL"
     else:
-        confidence = (small / len(history)) * 100
-        return "SMALL", round(confidence, 1)
+        state = "TREND"
+
+    return state, prediction, round(confidence, 1)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot Ready\nSend number (0-9) then /predict")
+    await update.message.reply_text("🤖 AI Bot Ready\nSend numbers then /predict")
 
-async def save_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_prediction
 
-    try:
-        num = int(update.message.text)
-        if num < 0 or num > 9:
-            return
+    text = update.message.text.strip()
+    if not text.isdigit():
+        return
 
-        history.append(num)
+    num = int(text)
+    history.append(num)
 
-        if last_prediction:
-            predicted = last_prediction
-            actual = "BIG" if num >= 5 else "SMALL"
-
-            if predicted == actual:
-                await update.message.reply_text("Result: WIN ✅")
-            else:
-                await update.message.reply_text("Result: LOSS ❌")
-
-        await update.message.reply_text(f"✅ Saved: {num}")
-
-    except:
-        pass
+    if last_prediction:
+        actual = "BIG" if num >= 5 else "SMALL"
+        result = "WIN ✅" if actual == last_prediction else "LOSS ❌"
+        await update.message.reply_text(f"Result: {result}")
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_prediction
 
-    msg = await update.message.reply_text("🔎 Analyzing data...")
+    msg = await update.message.reply_text("🧠 Analyzing...")
     await asyncio.sleep(2.5)
 
-    prediction, confidence = analyze()
-    last_prediction = prediction
+    state, pred, conf = predict_logic()
+    last_prediction = pred
 
     await msg.edit_text(
-        f"📊 AI Analysis: DONE\n🎯 Prediction: {prediction}\n📈 Confidence: {confidence}%"
+        f"📊 Market: {state}\n🎯 Prediction: {pred}\n📈 Confidence: {conf}%"
     )
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("predict", predict))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_number))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save))
 
-    print("BOT RUNNING ✅")
     app.run_polling()
 
 if __name__ == "__main__":
